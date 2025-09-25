@@ -18,7 +18,6 @@ import { ThumbnailProvider, ThumbnailContext } from "./contexts/ThumbnailContext
 import { AuthProvider, AuthContext } from "./contexts/AuthContext";
 import { ThemeProvider, useTheme } from "./contexts/ThemeContext";
 import { HistoryProvider } from "./contexts/HistoryContext";
-import YouTubeDownloaderModule from "./features/YouTubeDownloaderModule";
 
 export type Page = 'home' | 'dashboard' | 'generator' | 'extractor' | 'pricing' | 'privacy' | 'terms' | 'login' | 'signup' | 'settings' | 'content' | 'tools' | 'analytics' | 'team' | 'face-editor' | 'history'| 'downloader';
 
@@ -174,9 +173,7 @@ const LoggedInApp: React.FC = () => {
                 return <FaceEditorModule onNavigate={setPage} />;
             case 'extractor':
                 return <ExtractorModule onNavigate={setPage} />;
-                case 'downloader':
-    return <YouTubeDownloaderModule onNavigate={setPage} />;
-            case 'history':
+                          case 'history':
                 return <HistoryPage onNavigate={setPage} />;
             case 'settings':
                 return <AccountSettingsPage onNavigate={setPage} />;
@@ -203,7 +200,6 @@ const LoggedInApp: React.FC = () => {
                             <NavLink active={page === 'generator'} onClick={() => setPage('generator')}>Generate</NavLink>
                             <NavLink active={page === 'face-editor'} onClick={() => setPage('face-editor')}>Face Editor</NavLink>
                             <NavLink active={page === 'extractor'} onClick={() => setPage('extractor')}>Extractor</NavLink>
-                            <NavLink active={page === 'downloader'} onClick={() => setPage('downloader')}>Downloader</NavLink>
                             <NavLink active={page === 'history'} onClick={() => setPage('history')}>History</NavLink>
                         </nav>
                         <div className="flex items-center gap-2">
