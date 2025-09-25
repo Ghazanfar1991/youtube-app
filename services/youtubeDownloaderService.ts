@@ -21,12 +21,6 @@ interface DownloadMetadata {
   audio: DownloadOption[];
 }
 
-export async function fetchDownloadMetadata(url: string): Promise<DownloadMetadata> {
-  const response = await fetch(`/api/youtube-download?url=${encodeURIComponent(url)}`);
-  const json = await response.json();
-  if (!response.ok) throw new Error(json?.error || 'Failed to fetch download options');
-  return json;
-}
 const API_BASE =
   import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '') || '';
 
