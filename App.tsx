@@ -143,85 +143,145 @@ const PublicApp: React.FC = () => {
 }
 
 const LoggedInApp: React.FC = () => {
-    const [page, setPage] = useState<Page>('dashboard');
+    const [page, setPage] = useState<Page>("dashboard");
     const { activeAccount, logout } = useContext(AuthContext);
     const [isDropdownOpen, setIsDropdownOpen] = useState(false);
     const dropdownRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
         const handleClickOutside = (event: MouseEvent) => {
-        if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
-            setIsDropdownOpen(false);
-        }
+            if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+                setIsDropdownOpen(false);
+            }
         };
         document.addEventListener("mousedown", handleClickOutside);
         return () => {
-        document.removeEventListener("mousedown", handleClickOutside);
+            document.removeEventListener("mousedown", handleClickOutside);
         };
     }, [dropdownRef]);
 
     useEffect(() => {
         window.scrollTo(0, 0);
     }, [page]);
-    
+
+    const mobileNavItems: Array<{ page: Page; label: string; icon: string }> = [
+        { page: "dashboard", label: "Dashboard", icon: "space_dashboard" },
+        { page: "generator", label: "Generate", icon: "auto_awesome" },
+        { page: "face-editor", label: "Face Editor", icon: "face_retouching_natural" },
+        { page: "extractor", label: "Extractor", icon: "content_cut" },
+        { page: "downloader", label: "Downloader", icon: "download" },
+        { page: "history", label: "History", icon: "history" },
+    ];
+
     const renderPage = () => {
         switch (page) {
-            case 'dashboard':
+            case "dashboard":
                 return <Dashboard onNavigate={setPage} />;
-            case 'generator':
+            case "generator":
                 return <ContentModule />;
-            case 'face-editor':
+            case "face-editor":
                 return <FaceEditorModule onNavigate={setPage} />;
-            case 'extractor':
+            case "extractor":
                 return <ExtractorModule onNavigate={setPage} />;
-                case 'downloader':
-    return <YouTubeDownloaderModule onNavigate={setPage} />;
-            case 'history':
+            case "downloader":
+                return <YouTubeDownloaderModule onNavigate={setPage} />;
+            case "history":
                 return <HistoryPage onNavigate={setPage} />;
-            case 'settings':
+            case "settings":
                 return <AccountSettingsPage onNavigate={setPage} />;
-            case 'pricing':
+            case "pricing":
                 return <PricingPage onNavigate={setPage} />;
             default:
                 return <Dashboard onNavigate={setPage} />;
         }
-    }
+    };
 
     return (
         <div className="flex flex-col min-h-screen">
-             <header className="sticky top-0 z-50 bg-background-light/80 dark:bg-background-dark/80 backdrop-blur-lg border-b border-black/10 dark:border-white/10">
+            <header className="sticky top-0 z-50 bg-background-light/80 dark:bg-background-dark/80 backdrop-blur-lg border-b border-black/10 dark:border-white/10">
                 <div className="container mx-auto px-4 sm:px-6 lg:px-8">
                     <div className="flex items-center justify-between h-16">
                         <div className="flex items-center gap-4">
-                            <a href="#" onClick={(e) => { e.preventDefault(); setPage('dashboard')}} className="flex items-center gap-4">
-                                <div className="text-primary size-7"><ThumbGeniusLogo /></div>
-                                <h1 className="text-xl font-bold text-gray-900 dark:text-white">ThumbGenius</h1>
+                            <a
+                                href="#"
+                                onClick={(e) => {
+                                    e.preventDefault();
+                                    setPage("dashboard");
+                                }}
+                                className="flex items-center gap-4"
+                            >
+                                <div className="text-primary size-7">
+                                    <ThumbGeniusLogo />
+                                </div>
+                                <h1 className="text-xl font-bold text-gray-900 dark:text-white">
+                                    ThumbGenius
+                                </h1>
                             </a>
                         </div>
                         <nav className="hidden md:flex items-center gap-6">
-                            <NavLink active={page === 'dashboard'} onClick={() => setPage('dashboard')}>Dashboard</NavLink>
-                            <NavLink active={page === 'generator'} onClick={() => setPage('generator')}>Generate</NavLink>
-                            <NavLink active={page === 'face-editor'} onClick={() => setPage('face-editor')}>Face Editor</NavLink>
-                            <NavLink active={page === 'extractor'} onClick={() => setPage('extractor')}>Extractor</NavLink>
-                            <NavLink active={page === 'downloader'} onClick={() => setPage('downloader')}>Downloader</NavLink>
-                            <NavLink active={page === 'history'} onClick={() => setPage('history')}>History</NavLink>
+                            <NavLink active={page === "dashboard"} onClick={() => setPage("dashboard")}>
+                                Dashboard
+                            </NavLink>
+                            <NavLink active={page === "generator"} onClick={() => setPage("generator")}>
+                                Generate
+                            </NavLink>
+                            <NavLink active={page === "face-editor"} onClick={() => setPage("face-editor")}>
+                                Face Editor
+                            </NavLink>
+                            <NavLink active={page === "extractor"} onClick={() => setPage("extractor")}>
+                                Extractor
+                            </NavLink>
+                            <NavLink active={page === "downloader"} onClick={() => setPage("downloader")}>
+                                Downloader
+                            </NavLink>
+                            <NavLink active={page === "history"} onClick={() => setPage("history")}>
+                                History
+                            </NavLink>
                         </nav>
                         <div className="flex items-center gap-2">
                             <ThemeToggleButton />
                             <div ref={dropdownRef} className="relative">
-                                <button onClick={() => setIsDropdownOpen(!isDropdownOpen)} className="flex items-center gap-2 p-2 rounded-lg hover:bg-black/5 dark:hover:bg-white/10">
+                                <button
+                                    onClick={() => setIsDropdownOpen(!isDropdownOpen)}
+                                    className="flex items-center gap-2 p-2 rounded-lg hover:bg-black/5 dark:hover:bg-white/10"
+                                >
                                     <div className="w-8 h-8 rounded-full bg-primary/20 text-primary flex items-center justify-center font-bold">
-                                        {activeAccount?.picture ? <img src={activeAccount.picture} alt="User" className="w-full h-full rounded-full" /> : activeAccount?.name.charAt(0)}
+                                        {activeAccount?.picture ? (
+                                            <img src={activeAccount.picture} alt="User" className="w-full h-full rounded-full" />
+                                        ) : (
+                                            activeAccount?.name.charAt(0)
+                                        )}
                                     </div>
                                     <div className="hidden sm:block text-left">
                                         <p className="text-sm font-semibold">{activeAccount?.name}</p>
-                                        <p className="text-xs text-gray-500 dark:text-gray-400">Credits: {activeAccount?.credits}</p>
+                                        <p className="text-xs text-gray-500 dark:text-gray-400">
+                                            Credits: {activeAccount?.credits}
+                                        </p>
                                     </div>
                                 </button>
                                 {isDropdownOpen && (
                                     <div className="absolute right-0 mt-2 w-48 bg-white dark:bg-gray-800 border dark:border-gray-700 rounded-md shadow-lg py-1 z-20">
-                                        <a href="#" onClick={(e) => { e.preventDefault(); setPage('settings'); setIsDropdownOpen(false); }} className="block px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">Settings</a>
-                                        <a href="#" onClick={(e) => { e.preventDefault(); logout(); }} className="block px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-gray-100 dark:hover:bg-gray-700">Logout</a>
+                                        <a
+                                            href="#"
+                                            onClick={(e) => {
+                                                e.preventDefault();
+                                                setPage("settings");
+                                                setIsDropdownOpen(false);
+                                            }}
+                                            className="block px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+                                        >
+                                            Settings
+                                        </a>
+                                        <a
+                                            href="#"
+                                            onClick={(e) => {
+                                                e.preventDefault();
+                                                logout();
+                                            }}
+                                            className="block px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-gray-100 dark:hover:bg-gray-700"
+                                        >
+                                            Logout
+                                        </a>
                                     </div>
                                 )}
                             </div>
@@ -229,11 +289,37 @@ const LoggedInApp: React.FC = () => {
                     </div>
                 </div>
             </header>
-             <main className="flex-grow">
-                <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-8">
+            <main className="flex-grow">
+                <div className="container mx-auto px-4 sm:px-6 lg:px-8 pt-8 pb-24 md:pb-8">
                     {renderPage()}
                 </div>
             </main>
+            <footer className="md:hidden fixed bottom-0 left-0 right-0 z-50 border-t border-black/10 dark:border-white/10 bg-background-light/95 dark:bg-background-dark/95 backdrop-blur-lg">
+                <nav className="mx-auto max-w-screen-sm">
+                    <ul className="flex justify-around py-2">
+                        {mobileNavItems.map((item) => (
+                            <li key={item.page}>
+                                <button
+                                    type="button"
+                                    title={item.label}
+                                    aria-label={item.label}
+                                    onClick={() => setPage(item.page)}
+                                    className={`group relative flex h-12 w-12 items-center justify-center rounded-full transition-colors ${
+                                        page === item.page
+                                            ? "text-primary dark:text-primary-300"
+                                            : "text-gray-500 dark:text-gray-400 hover:text-primary dark:hover:text-primary-300"
+                                    }`}
+                                >
+                                    <span className="material-symbols-outlined text-2xl">{item.icon}</span>
+                                    <span className="pointer-events-none absolute -top-2 translate-y-full rounded bg-gray-900 px-2 py-1 text-xs font-semibold text-white opacity-0 shadow transition-all duration-150 group-hover:-translate-y-1 group-hover:opacity-100">
+                                        {item.label}
+                                    </span>
+                                </button>
+                            </li>
+                        ))}
+                    </ul>
+                </nav>
+            </footer>
         </div>
     );
 };
