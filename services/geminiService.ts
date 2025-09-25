@@ -8,10 +8,12 @@ import { ChatMessage } from '../types';
 
 // In a real application, this would be secured on a backend server.
 // For this example, we're assuming the API key is available in the environment.
-const apiKey = import.meta.env.VITE_GEMINI_API_KEY || import.meta.env.GEMINI_API_KEY;
-if (!apiKey) {
-  throw new Error("API_KEY environment variable not set");
+// services/geminiService.ts
+const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
+if (!GEMINI_API_KEY) {
+  throw new Error("VITE_GEMINI_API_KEY environment variable not set");
 }
+
 const ai = new GoogleGenAI({ apiKey });
 
 
