@@ -14,7 +14,7 @@ if (!GEMINI_API_KEY) {
   throw new Error("VITE_GEMINI_API_KEY environment variable not set");
 }
 
-const ai = new GoogleGenAI({ apiKey });
+const ai = new GoogleGenAI({ GEMINI_API_KEY });
 
 
 interface GenerateThumbnailParams {
