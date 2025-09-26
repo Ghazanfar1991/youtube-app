@@ -1,6 +1,4 @@
-const ytdl = require("ytdl-core");
-
-/** @typedef {"video+audio" | "video-only" | "audio-only"} FormatType */
+import ytdl from "ytdl-core";
 
 const ALLOWED_HOSTNAMES = new Set([
   "www.youtube.com",
@@ -11,10 +9,10 @@ const ALLOWED_HOSTNAMES = new Set([
 
 const formatBytes = (bytes) => {
   if (!Number.isFinite(bytes) || bytes <= 0) return null;
-  const units = ["B", "KB", "MB", "GB"];
-  const index = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
-  const value = bytes / Math.pow(1024, index);
-  return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[index]}`;
+  const UNITS = ["B", "KB", "MB", "GB"];
+  const index = Math.min(UNITS.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+  const value = bytes / 1024 ** index;
+  return `${value.toFixed(value >= 10 ? 0 : 1)} ${UNITS[index]}`;
 };
 
 const readBody = async (req) => {
@@ -32,7 +30,7 @@ const readBody = async (req) => {
   }
 };
 
-module.exports = async (req, res) => {
+export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -81,8 +79,7 @@ module.exports = async (req, res) => {
     const formats = info.formats
       .filter((format) => format.url && (format.hasVideo || format.hasAudio))
       .map((format) => {
-        /** @type {FormatType} */
-        const type =
+        const formatType =
           format.hasVideo && format.hasAudio
             ? "video+audio"
             : format.hasVideo
@@ -112,7 +109,7 @@ module.exports = async (req, res) => {
           language: format.language ?? format.audioTrack?.displayName ?? null,
           approxFileSizeBytes: estimated,
           approxFileSizeText: estimated ? formatBytes(estimated) : null,
-          formatType: type,
+          formatType,
           isLive: info.videoDetails.isLiveContent,
           url: format.url,
         };
@@ -146,6 +143,4 @@ module.exports = async (req, res) => {
     console.error("YouTube info fetch failed:", error);
     res.status(500).json({ error: "Failed to retrieve video metadata" });
   }
-};
-
-
+}
