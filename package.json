@@ -17,7 +17,6 @@
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "youtube-dl-exec": "^3.0.25",
-    "@distube/ytdl-core": "^4.13.4"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
