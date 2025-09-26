@@ -18,7 +18,7 @@ import { ThumbnailProvider, ThumbnailContext } from "./contexts/ThumbnailContext
 import { AuthProvider, AuthContext } from "./contexts/AuthContext";
 import { ThemeProvider, useTheme } from "./contexts/ThemeContext";
 import { HistoryProvider } from "./contexts/HistoryContext";
-import YouTubeDownloaderModule from "./features/YouTubeDownloaderModule";
+import DownloaderModule from "./features/DownloaderModule";
 
 export type Page = 'home' | 'dashboard' | 'generator' | 'extractor' | 'pricing' | 'privacy' | 'terms' | 'login' | 'signup' | 'settings' | 'content' | 'tools' | 'analytics' | 'team' | 'face-editor' | 'history'| 'downloader';
 
@@ -184,7 +184,7 @@ const LoggedInApp: React.FC = () => {
             case "extractor":
                 return <ExtractorModule onNavigate={setPage} />;
             case "downloader":
-                return <YouTubeDownloaderModule onNavigate={setPage} />;
+                return <DownloaderModule onNavigate={setPage} />;
             case "history":
                 return <HistoryPage onNavigate={setPage} />;
             case "settings":
