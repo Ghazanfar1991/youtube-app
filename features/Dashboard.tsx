@@ -195,7 +195,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
                         ) : (
                             <Card className="mt-4">
                                 <CardContent className="p-10 text-center">
-                                    <p className="text-gray-500 dark:text-gray-400">Your favorite items will appear here.</p>
+                                    <p className="text-gray-500 mt-4 dark:text-gray-400">Your favorite items will appear here.</p>
                                     <p className="text-sm mt-1 text-gray-500/80">Click the star on any generated item to save it.</p>
                                 </CardContent>
                             </Card>

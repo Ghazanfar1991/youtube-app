@@ -205,6 +205,7 @@ const HistoryPage: React.FC<HistoryPageProps> = ({ onNavigate }) => {
                     <TabsTrigger value="extracted">Extracted ({extractedItems.length})</TabsTrigger>
                     <TabsTrigger value="ideation">Ideation ({ideationItems.length})</TabsTrigger>
                 </TabsList>
+          
                 <TabsContent value="all">
                     <HistoryGrid items={history} onItemClick={onItemClick} toggleFavorite={toggleFavorite} emptyStateMessage="Your history is empty." onNavigate={onNavigate} />
                 </TabsContent>
