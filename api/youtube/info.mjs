@@ -1,32 +1,123 @@
-import ytdl from "@distube/ytdl-core";
-
-const ALLOWED_HOSTNAMES = new Set([
-  "www.youtube.com",
-  "youtube.com",
-  "youtu.be",
-  "m.youtube.com",
-]);
+// api/youtube/info.mjs
+const DEFAULT_PIPED_INSTANCES = [
+  "piped.video",
+  "piped.mha.fi",
+  "piped.lunar.icu",
+  "watch.leptons.xyz"
+];
 
 const formatBytes = (bytes) => {
   if (!Number.isFinite(bytes) || bytes <= 0) return null;
-  const UNITS = ["B", "KB", "MB", "GB"];
-  const index = Math.min(UNITS.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+  const units = ["B", "KB", "MB", "GB"];
+  const index = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
   const value = bytes / 1024 ** index;
-  return `${value.toFixed(value >= 10 ? 0 : 1)} ${UNITS[index]}`;
+  return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[index]}`;
 };
 
-const readBody = async (req) => {
-  if (req.body) return req.body;
-  const buffers = [];
-  for await (const chunk of req) {
-    buffers.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
-  }
-  const raw = Buffer.concat(buffers).toString("utf8");
-  if (!raw) return {};
+const toNumber = (value) => {
+  if (value === undefined || value === null) return null;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const parseVideoId = (input) => {
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+
+  if (/^[a-zA-Z0-9_-]{11}$/.test(trimmed)) return trimmed;
+
   try {
-    return JSON.parse(raw);
+    const url = new URL(trimmed);
+    const host = url.hostname.replace(/^www\./, "");
+
+    if (host === "youtu.be") return url.pathname.replace(/^\/+/, "").substring(0, 11);
+
+    if (host.endsWith("youtube.com")) {
+      if (url.searchParams.has("v")) return url.searchParams.get("v").substring(0, 11);
+      const pathMatch = url.pathname.match(/\/(shorts|live|embed)\/([a-zA-Z0-9_-]{11})/);
+      if (pathMatch) return pathMatch[2];
+    }
   } catch {
-    return {};
+    return null;
+  }
+
+  return null;
+};
+
+const sanitizeInstance = (value) =>
+  value ? value.replace(/^https?:\/\//, "").replace(/\/+$/, "") : value;
+
+const formatVideoStream = (stream, counter, isLive) => ({
+  itag: counter,
+  mimeType: stream.mimeType ?? (stream.format ? `video/${stream.format.toLowerCase()}` : null),
+  container: stream.format ? stream.format.toLowerCase() : null,
+  qualityLabel: stream.quality ?? stream.qualityLabel ?? null,
+  audioQuality: stream.audioTrack?.audioQuality ?? null,
+  audioBitrate: toNumber(stream.bitrate),
+  bitrate: toNumber(stream.bitrate),
+  fps: toNumber(stream.fps),
+  hasAudio: !stream.videoOnly,
+  hasVideo: true,
+  language: stream.audioTrack?.audioLocale ?? stream.audioTrack?.displayName ?? null,
+  approxFileSizeBytes: toNumber(stream.size) ?? null,
+  approxFileSizeText: formatBytes(toNumber(stream.size)),
+  formatType: stream.videoOnly ? "video-only" : "video+audio",
+  isLive,
+  url: stream.url
+});
+
+const formatAudioStream = (stream, counter, isLive) => ({
+  itag: counter,
+  mimeType: stream.mimeType ?? (stream.format ? `audio/${stream.format.toLowerCase()}` : null),
+  container: stream.format ? stream.format.toLowerCase() : null,
+  qualityLabel: stream.quality ?? null,
+  audioQuality: stream.audioTrack?.audioQuality ?? stream.quality ?? null,
+  audioBitrate: toNumber(stream.bitrate),
+  bitrate: toNumber(stream.bitrate),
+  fps: null,
+  hasAudio: true,
+  hasVideo: false,
+  language: stream.audioTrack?.audioLocale ?? stream.audioTrack?.displayName ?? null,
+  approxFileSizeBytes: toNumber(stream.size) ?? null,
+  approxFileSizeText: formatBytes(toNumber(stream.size)),
+  formatType: "audio-only",
+  isLive,
+  url: stream.url
+});
+
+const getInstanceList = () => {
+  const envValue = sanitizeInstance(process.env.PIPED_INSTANCE);
+  if (envValue) return [envValue, ...DEFAULT_PIPED_INSTANCES.filter((i) => i !== envValue)];
+  return DEFAULT_PIPED_INSTANCES;
+};
+
+const fetchStreams = async (videoId) => {
+  const errors = [];
+  for (const host of getInstanceList()) {
+    try {
+      const rsp = await fetch(`https://${host}/api/v1/streams/${videoId}`, {
+        headers: { accept: "application/json" }
+      });
+      if (!rsp.ok) throw new Error(`HTTP ${rsp.status}`);
+      const json = await rsp.json();
+      return { host, json };
+    } catch (error) {
+      errors.push(`${host}: ${error.message}`);
+    }
+  }
+  throw new Error(`All proxy instances failed. Attempted: ${errors.join(" | ")}`);
+};
+
+const fetchMetadata = async (videoId, host) => {
+  try {
+    const rsp = await fetch(`https://${host}/api/v1/videos/${videoId}`, {
+      headers: { accept: "application/json" }
+    });
+    if (!rsp.ok) return null;
+    return await rsp.json();
+  } catch {
+    return null;
   }
 };
 
@@ -47,101 +138,74 @@ export default async function handler(req, res) {
 
   const parsedUrl = new URL(req.url ?? "/", "https://placeholder.local");
   const queryUrl = parsedUrl.searchParams.get("url") ?? undefined;
-  const body = req.method === "POST" ? await readBody(req) : {};
-  const payloadUrl = typeof body?.url === "string" ? body.url : undefined;
-  const targetUrl = (payloadUrl ?? queryUrl ?? "").trim();
-
-  if (!targetUrl) {
-    res.status(400).json({ error: "Missing YouTube URL" });
-    return;
-  }
-
-  try {
-    const candidateUrl = new URL(targetUrl);
-    if (!ALLOWED_HOSTNAMES.has(candidateUrl.hostname)) {
-      res.status(400).json({ error: "Only public YouTube URLs are supported" });
-      return;
-    }
-  } catch {
-    res.status(400).json({ error: "Invalid URL" });
-    return;
-  }
-
-  if (!ytdl.validateURL(targetUrl)) {
-    res.status(400).json({ error: "Unable to validate YouTube URL" });
-    return;
-  }
-
-  try {
-    const info = await ytdl.getInfo(targetUrl);
-    const durationSeconds = Number(info.videoDetails.lengthSeconds ?? 0);
-
-    const formats = info.formats
-      .filter((format) => format.url && (format.hasVideo || format.hasAudio))
-      .map((format) => {
-        const formatType =
-          format.hasVideo && format.hasAudio
-            ? "video+audio"
-            : format.hasVideo
-            ? "video-only"
-            : "audio-only";
-
-        const contentLength = format.contentLength ? parseInt(format.contentLength, 10) : null;
-        const estimated =
-          contentLength ??
-          (durationSeconds && format.bitrate
-            ? Math.round((format.bitrate / 8) * durationSeconds)
-            : null);
-
-        return {
-          itag: format.itag,
-          mimeType: format.mimeType ?? null,
-          container:
-            format.container ??
-            (format.mimeType ? format.mimeType.split(";")[0].split("/")[1] : null),
-          qualityLabel: format.qualityLabel ?? null,
-          audioQuality: format.audioQuality ?? format.audioTrack?.audioQuality ?? null,
-          audioBitrate: format.audioBitrate ?? null,
-          bitrate: format.bitrate ?? null,
-          fps: format.fps ?? null,
-          hasAudio: format.hasAudio,
-          hasVideo: format.hasVideo,
-          language: format.language ?? format.audioTrack?.displayName ?? null,
-          approxFileSizeBytes: estimated,
-          approxFileSizeText: estimated ? formatBytes(estimated) : null,
-          formatType,
-          isLive: info.videoDetails.isLiveContent,
-          url: format.url,
-        };
-      })
-      .sort((a, b) => {
-        const order = { "video+audio": 0, "video-only": 1, "audio-only": 2 };
-        if (a.formatType !== b.formatType) {
-          return order[a.formatType] - order[b.formatType];
+  let body = {};
+  if (req.method === "POST") {
+    body = req.body ?? {};
+    if (!req.body) {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      if (chunks.length) {
+        try {
+          body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        } catch {
+          body = {};
         }
-        const qualityA = parseInt(a.qualityLabel ?? "0", 10);
-        const qualityB = parseInt(b.qualityLabel ?? "0", 10);
-        return qualityB - qualityA;
-      });
+      }
+    }
+  }
+
+  const rawTarget = typeof body?.url === "string" ? body.url : queryUrl;
+  const videoId = rawTarget ? parseVideoId(rawTarget) : null;
+
+  if (!videoId) {
+    res.status(400).json({ error: "Provide a valid YouTube URL or video ID." });
+    return;
+  }
+
+  try {
+    const { host, json: streamData } = await fetchStreams(videoId);
+    const videoMeta = await fetchMetadata(videoId, host);
+    const isLive = Boolean(streamData.isLive);
+    let counter = 1000;
+
+    const videoFormats = Array.isArray(streamData.videoStreams)
+      ? streamData.videoStreams.map((stream) => formatVideoStream(stream, ++counter, isLive))
+      : [];
+
+    const audioFormats = Array.isArray(streamData.audioStreams)
+      ? streamData.audioStreams.map((stream) => formatAudioStream(stream, ++counter, isLive))
+      : [];
+
+    const formats = [...videoFormats, ...audioFormats].sort((a, b) => {
+      const order = { "video+audio": 0, "video-only": 1, "audio-only": 2 };
+      if (a.formatType !== b.formatType) {
+        return order[a.formatType] - order[b.formatType];
+      }
+      const qualityA = parseInt(a.qualityLabel ?? "0", 10);
+      const qualityB = parseInt(b.qualityLabel ?? "0", 10);
+      return qualityB - qualityA;
+    });
+
+    const fallbackViews = streamData.views ?? streamData.viewCount ?? null;
+    const fallbackDuration = streamData.duration ?? null;
+    const fallbackPublish = streamData.uploadDate ?? streamData.uploadDate ?? null;
 
     res.status(200).json({
       video: {
-        id: info.videoDetails.videoId,
-        title: info.videoDetails.title,
-        author: info.videoDetails.author.name,
-        channelId: info.videoDetails.channelId,
-        lengthSeconds: durationSeconds,
-        viewCount: Number(info.videoDetails.viewCount ?? 0),
-        thumbnail:
-          info.videoDetails.thumbnails.sort((a, b) => (b.width ?? 0) - (a.width ?? 0))[0]?.url ??
-          null,
-        publishDate: info.videoDetails.publishDate ?? null,
+        id: videoId,
+        title: streamData.title ?? videoMeta?.title ?? "YouTube video",
+        author: streamData.uploader ?? videoMeta?.uploader ?? "Unknown creator",
+        channelId: streamData.uploaderId ?? videoMeta?.uploaderId ?? null,
+        lengthSeconds: toNumber(videoMeta?.duration) ?? toNumber(fallbackDuration) ?? 0,
+        viewCount: toNumber(videoMeta?.views) ?? toNumber(fallbackViews) ?? 0,
+        thumbnail: streamData.thumbnailUrl ?? videoMeta?.thumbnailUrl ?? null,
+        publishDate: videoMeta?.uploadDate ?? fallbackPublish ?? null
       },
       formats,
+      proxyInstance: host
     });
   } catch (error) {
-    console.error("YouTube info fetch failed:", error);
-    res.status(500).json({ error: "Failed to retrieve video metadata" });
+    console.error("Proxy fetch failed:", error);
+    res.status(502).json({ error: "All proxy instances failed to respond." });
   }
 }
-
