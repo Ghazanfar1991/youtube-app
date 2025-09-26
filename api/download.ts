@@ -1,29 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-const RAPIDAPI_HOST = 'youtube-media-downloader.p.rapidapi.com';
-
-type RapidThumbnail = { url: string; width?: number; height?: number };
-type RapidStreamingData = {
-  formats?: RapidFormat[];
-  adaptiveFormats?: RapidFormat[];
-};
-type RapidFormat = {
-  itag?: number;
-  mimeType?: string;
-  quality?: string;
-  qualityLabel?: string;
-  bitrate?: number;
-  averageBitrate?: number;
-  audioQuality?: string;
-  audioChannels?: number;
-  url?: string;
-  downloadUrl?: string;
-  href?: string;
-  signatureCipher?: string;
-  cipher?: string;
-  contentLength?: string | number;
-  clen?: string;
-};
+const RAPIDAPI_HOST = 'ytgrabber.p.rapidapi.com';
 
 interface DownloadVariant {
   itag?: number;
@@ -40,7 +17,7 @@ interface DownloadResponse {
   title?: string;
   channelName?: string;
   durationText?: string;
-  thumbnails: RapidThumbnail[];
+  thumbnails: Array<{ url: string; width?: number; height?: number }>;
   downloads: DownloadVariant[];
 }
 
@@ -73,73 +50,118 @@ const extractVideoId = (input: string): string | null => {
   }
 };
 
-const resolveCipherUrl = (cipher?: string): string | null => {
-  if (!cipher) return null;
-  const params = new URLSearchParams(cipher);
-  const url = params.get('url');
-  const sp = params.get('sp');
-  const sig = params.get('s') ?? params.get('sig');
-  if (!url) return null;
-  if (sp && sig) {
-    return `${url}&${sp}=${sig}`;
-  }
-  return url;
+const parseFileSize = (value: unknown): number | undefined => {
+  if (typeof value !== 'string') return undefined;
+  const match = value.trim().match(/^([\d.,]+)\s*(B|KB|MB|GB|TB)$/i);
+  if (!match) return undefined;
+  const amount = Number.parseFloat(match[1].replace(',', '.'));
+  const unit = match[2].toUpperCase();
+  const unitIndex = ['B', 'KB', 'MB', 'GB', 'TB'].indexOf(unit);
+  if (unitIndex === -1 || Number.isNaN(amount)) return undefined;
+  return Math.round(amount * 1024 ** unitIndex);
 };
 
-const normaliseFormats = (streamingData?: RapidStreamingData): DownloadVariant[] => {
-  if (!streamingData) return [];
-
-  const combined = [
-    ...(streamingData.formats ?? []),
-    ...(streamingData.adaptiveFormats ?? []),
-  ];
-
-  const seen = new Set<string>();
-  const variants: DownloadVariant[] = [];
-
-  for (const format of combined) {
-    const directUrl =
-      format.url ??
-      format.downloadUrl ??
-      format.href ??
-      resolveCipherUrl(format.signatureCipher ?? format.cipher);
-
-    if (!directUrl) continue;
-
-    const contentLengthRaw =
-      typeof format.contentLength === 'string'
-        ? parseInt(format.contentLength, 10)
-        : typeof format.clen === 'string'
-        ? parseInt(format.clen, 10)
-        : typeof format.contentLength === 'number'
-        ? format.contentLength
-        : undefined;
-
-    const key = `${format.itag ?? ''}-${directUrl}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-
-    variants.push({
-      itag: format.itag,
-      qualityLabel: format.qualityLabel ?? format.quality,
-      mimeType: format.mimeType,
-      hasAudio: Boolean(format.audioQuality ?? format.audioChannels),
-      url: directUrl,
-      bitrate: format.bitrate ?? format.averageBitrate,
-      contentLength: Number.isFinite(contentLengthRaw) ? contentLengthRaw : undefined,
-    });
+const toBoolean = (value: unknown, fallback: boolean): boolean => {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  if (typeof value === 'string') {
+    const normalised = value.toLowerCase();
+    if (['true', 'yes', '1'].includes(normalised)) return true;
+    if (['false', 'no', '0'].includes(normalised)) return false;
   }
-
-  return variants.sort((a, b) => {
-    if (a.hasAudio !== b.hasAudio) return a.hasAudio ? -1 : 1;
-    return (b.bitrate ?? 0) - (a.bitrate ?? 0);
-  });
+  return fallback;
 };
 
-const secondsToDuration = (value?: string): string | undefined => {
-  if (!value) return undefined;
-  const total = Number.parseInt(value, 10);
-  if (!Number.isFinite(total)) return undefined;
+const deduceHasAudio = (item: Record<string, unknown>, mime?: string): boolean => {
+  if ('audio' in item) {
+    return toBoolean(item.audio, mime ? /audio/i.test(mime) : true);
+  }
+  if ('hasAudio' in item) {
+    return toBoolean(item.hasAudio, mime ? /audio/i.test(mime) : true);
+  }
+  if (mime) {
+    return !/video\/(x-)?webm/i.test(mime) || /audio/i.test(mime);
+  }
+  const quality = typeof item.quality === 'string' ? item.quality : '';
+  return !/no audio| without audio/i.test(quality);
+};
+
+const mapDownloads = (raw: unknown): DownloadVariant[] => {
+  if (!Array.isArray(raw)) return [];
+
+  return raw
+    .map((entry, index) => {
+      if (!entry || typeof entry !== 'object') return null;
+
+      const item = entry as Record<string, unknown>;
+      const url =
+        typeof item.url === 'string'
+          ? item.url
+          : typeof item.link === 'string'
+          ? item.link
+          : typeof item.download_url === 'string'
+          ? item.download_url
+          : undefined;
+
+      if (!url) return null;
+
+      const mime =
+        typeof item.type === 'string'
+          ? item.type
+          : typeof item.mime === 'string'
+          ? item.mime
+          : typeof item.mimetype === 'string'
+          ? item.mimetype
+          : undefined;
+
+      const quality =
+        typeof item.quality === 'string'
+          ? item.quality
+          : typeof item.label === 'string'
+          ? item.label
+          : typeof item.resolution === 'string'
+          ? item.resolution
+          : undefined;
+
+      const contentLength =
+        parseFileSize(item.size) ??
+        parseFileSize(item.fileSize) ??
+        parseFileSize(item.filesize);
+
+      const bitrate =
+        typeof item.bitrate === 'number'
+          ? item.bitrate
+          : typeof item.bitrate === 'string'
+          ? Number.parseInt(item.bitrate, 10)
+          : undefined;
+
+      return {
+        itag:
+          typeof item.itag === 'number'
+            ? item.itag
+            : typeof item.itag === 'string'
+            ? Number.parseInt(item.itag, 10)
+            : index,
+        qualityLabel: quality,
+        mimeType: mime,
+        hasAudio: deduceHasAudio(item, mime),
+        url,
+        bitrate: Number.isFinite(bitrate) ? bitrate : undefined,
+        contentLength: Number.isFinite(contentLength) ? contentLength : undefined,
+      };
+    })
+    .filter((entry): entry is DownloadVariant => Boolean(entry));
+};
+
+const secondsToDuration = (value?: string | number): string | undefined => {
+  if (typeof value === 'string' && value.includes(':')) return value;
+  const total =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string'
+      ? Number.parseInt(value, 10)
+      : NaN;
+  if (!Number.isFinite(total) || total <= 0) return undefined;
   const hours = Math.floor(total / 3600);
   const minutes = Math.floor((total % 3600) / 60);
   const seconds = total % 60;
@@ -189,60 +211,68 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({ error: 'Could not derive a valid YouTube video ID from the input' });
   }
 
-    try {
-    const headers = {
-      'x-rapidapi-key': rapidApiKey,
-      'x-rapidapi-host': RAPIDAPI_HOST,
-    };
-
-    const infoRes = await fetch(
-      `https://${RAPIDAPI_HOST}/v2/video/info?videoId=${encodeURIComponent(videoId)}`,
-      { headers }
+  try {
+    const response = await fetch(
+      `https://${RAPIDAPI_HOST}/app/get/${encodeURIComponent(videoId)}`,
+      {
+        headers: {
+          'x-rapidapi-key': rapidApiKey,
+          'x-rapidapi-host': RAPIDAPI_HOST,
+        },
+      }
     );
 
-    if (!infoRes.ok) {
-      const message = await infoRes.text();
+    if (!response.ok) {
+      const message = await response.text();
       return res
-        .status(infoRes.status)
+        .status(response.status)
         .json({ error: 'Failed to retrieve video details', details: message });
     }
 
-    const infoJson = await infoRes.json();
+    const json = await response.json();
+    const data =
+      json?.data && typeof json.data === 'object'
+        ? (json.data as Record<string, unknown>)
+        : (json as Record<string, unknown>);
 
-    const thumbnails: RapidThumbnail[] =
-      infoJson?.videoDetails?.thumbnail?.thumbnails ??
-      infoJson?.thumbnails ??
-      infoJson?.data?.videoDetails?.thumbnail?.thumbnails ??
-      infoJson?.data?.thumbnails ??
-      [];
+    const downloads = mapDownloads(
+      (data.downloads as unknown) ??
+        (data.download as unknown) ??
+        (data.links as unknown) ??
+        (data.formats as unknown)
+    );
 
-    const streamingData: RapidStreamingData = (() => {
-      if (infoJson?.streamingData) return infoJson.streamingData;
-      if (infoJson?.data?.streamingData) return infoJson.data.streamingData;
-      if (infoJson?.data?.formats || infoJson?.data?.adaptiveFormats) {
-        return {
-          formats: infoJson.data.formats,
-          adaptiveFormats: infoJson.data.adaptiveFormats,
-        };
-      }
-      return {};
-    })();
-
-    const downloads = normaliseFormats(streamingData);
     if (!downloads.length) {
       return res
         .status(502)
         .json({ error: 'No downloadable streams were returned by RapidAPI for this video' });
     }
 
-    const videoDetails =
-      infoJson?.videoDetails ?? infoJson?.data?.videoDetails ?? infoJson;
+    const thumbnailValue = data.thumbnail ?? data.thumbnail_url ?? data.thumbnails;
+
+    const thumbnails =
+      Array.isArray(thumbnailValue)
+        ? (thumbnailValue
+            .filter((thumb) => thumb && typeof thumb === 'object')
+            .map((thumb) => thumb as { url: string; width?: number; height?: number }))
+        : typeof thumbnailValue === 'string'
+        ? [{ url: thumbnailValue }]
+        : [];
 
     const payloadResponse: DownloadResponse = {
       videoId,
-      title: videoDetails?.title,
-      channelName: videoDetails?.author ?? videoDetails?.channel?.name,
-      durationText: secondsToDuration(videoDetails?.lengthSeconds ?? infoJson?.lengthSeconds),
+      title: typeof data.title === 'string' ? data.title : json?.title,
+      channelName:
+        typeof data.author === 'string'
+          ? data.author
+          : typeof data.channel === 'string'
+          ? data.channel
+          : json?.channel,
+      durationText: secondsToDuration(
+        (data.duration as string | number | undefined) ??
+          (data.length as string | number | undefined) ??
+          (json?.duration as string | number | undefined)
+      ),
       thumbnails,
       downloads,
     };
@@ -252,3 +282,4 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.error('[youtube-download] error', error);
     res.status(500).json({ error: 'Unexpected error contacting RapidAPI' });
   }
+}
