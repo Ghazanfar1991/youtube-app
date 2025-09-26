@@ -36,6 +36,7 @@ interface VideoSummary {
 interface DownloaderResponse {
   video: VideoSummary;
   formats: FormatSummary[];
+  proxyInstance?: string;
 }
 
 interface DownloaderModuleProps {
@@ -180,6 +181,11 @@ const DownloaderModule: React.FC<DownloaderModuleProps> = ({ onNavigate }) => {
                   className="h-32 w-56 rounded-lg object-cover shadow-sm"
                 />
               )}
+              {data.proxyInstance && (
+  <p className="text-xs text-gray-500 dark:text-gray-400">
+    Streams served via {data.proxyInstance}
+  </p>
+)}
               <div className="space-y-2">
                 <h3 className="text-xl font-semibold text-gray-900 dark:text-white">{data.video.title}</h3>
                 <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm text-gray-600 dark:text-gray-300">
