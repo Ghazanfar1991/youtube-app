@@ -189,58 +189,40 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({ error: 'Could not derive a valid YouTube video ID from the input' });
   }
 
-  try {
+    try {
     const headers = {
       'x-rapidapi-key': rapidApiKey,
       'x-rapidapi-host': RAPIDAPI_HOST,
     };
 
-    const [detailsRes, streamsRes] = await Promise.all([
-      fetch(
-        `https://${RAPIDAPI_HOST}/v2/video/details?videoId=${encodeURIComponent(videoId)}`,
-        { headers },
-      ),
-      fetch(
-        `https://${RAPIDAPI_HOST}/v2/video/streams?videoId=${encodeURIComponent(videoId)}`,
-        { headers },
-      ),
-    ]);
+    const infoRes = await fetch(
+      `https://${RAPIDAPI_HOST}/v2/video/info?videoId=${encodeURIComponent(videoId)}`,
+      { headers }
+    );
 
-    if (!detailsRes.ok) {
-      const message = await detailsRes.text();
+    if (!infoRes.ok) {
+      const message = await infoRes.text();
       return res
-        .status(detailsRes.status)
+        .status(infoRes.status)
         .json({ error: 'Failed to retrieve video details', details: message });
     }
-    if (!streamsRes.ok) {
-      const message = await streamsRes.text();
-      return res
-        .status(streamsRes.status)
-        .json({ error: 'Failed to retrieve streaming variants', details: message });
-    }
 
-    const detailsJson = await detailsRes.json();
-    const streamsJson = await streamsRes.json();
+    const infoJson = await infoRes.json();
 
     const thumbnails: RapidThumbnail[] =
-      detailsJson?.videoDetails?.thumbnail?.thumbnails ??
-      detailsJson?.thumbnails ??
-      streamsJson?.thumbnails ??
+      infoJson?.videoDetails?.thumbnail?.thumbnails ??
+      infoJson?.thumbnails ??
+      infoJson?.data?.videoDetails?.thumbnail?.thumbnails ??
+      infoJson?.data?.thumbnails ??
       [];
 
     const streamingData: RapidStreamingData = (() => {
-      if (streamsJson?.streamingData) return streamsJson.streamingData;
-      if (streamsJson?.data?.streamingData) return streamsJson.data.streamingData;
-      if (streamsJson?.data?.formats || streamsJson?.data?.adaptiveFormats) {
+      if (infoJson?.streamingData) return infoJson.streamingData;
+      if (infoJson?.data?.streamingData) return infoJson.data.streamingData;
+      if (infoJson?.data?.formats || infoJson?.data?.adaptiveFormats) {
         return {
-          formats: streamsJson.data.formats,
-          adaptiveFormats: streamsJson.data.adaptiveFormats,
-        };
-      }
-      if (streamsJson?.formats || streamsJson?.adaptiveFormats) {
-        return {
-          formats: streamsJson.formats,
-          adaptiveFormats: streamsJson.adaptiveFormats,
+          formats: infoJson.data.formats,
+          adaptiveFormats: infoJson.data.adaptiveFormats,
         };
       }
       return {};
@@ -253,13 +235,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         .json({ error: 'No downloadable streams were returned by RapidAPI for this video' });
     }
 
+    const videoDetails =
+      infoJson?.videoDetails ?? infoJson?.data?.videoDetails ?? infoJson;
+
     const payloadResponse: DownloadResponse = {
       videoId,
-      title: detailsJson?.videoDetails?.title ?? detailsJson?.title,
-      channelName: detailsJson?.videoDetails?.author ?? detailsJson?.channel?.name,
-      durationText: secondsToDuration(
-        detailsJson?.videoDetails?.lengthSeconds ?? detailsJson?.lengthSeconds,
-      ),
+      title: videoDetails?.title,
+      channelName: videoDetails?.author ?? videoDetails?.channel?.name,
+      durationText: secondsToDuration(videoDetails?.lengthSeconds ?? infoJson?.lengthSeconds),
       thumbnails,
       downloads,
     };
@@ -269,4 +252,3 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.error('[youtube-download] error', error);
     res.status(500).json({ error: 'Unexpected error contacting RapidAPI' });
   }
-}
