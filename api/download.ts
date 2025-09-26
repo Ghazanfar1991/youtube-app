@@ -196,17 +196,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     };
 
     const [detailsRes, streamsRes] = await Promise.all([
-      fetch(`https://${RAPIDAPI_HOST}/v2/video/details?videoId=${encodeURIComponent(videoId)}`, { headers }),
-      fetch(`https://${RAPIDAPI_HOST}/v2/video/streaming-data?videoId=${encodeURIComponent(videoId)}`, { headers }),
+      fetch(
+        `https://${RAPIDAPI_HOST}/v2/video/details?videoId=${encodeURIComponent(videoId)}`,
+        { headers },
+      ),
+      fetch(
+        `https://${RAPIDAPI_HOST}/v2/video/streams?videoId=${encodeURIComponent(videoId)}`,
+        { headers },
+      ),
     ]);
 
     if (!detailsRes.ok) {
       const message = await detailsRes.text();
-      return res.status(detailsRes.status).json({ error: 'Failed to retrieve video details', details: message });
+      return res
+        .status(detailsRes.status)
+        .json({ error: 'Failed to retrieve video details', details: message });
     }
     if (!streamsRes.ok) {
       const message = await streamsRes.text();
-      return res.status(streamsRes.status).json({ error: 'Failed to retrieve streaming variants', details: message });
+      return res
+        .status(streamsRes.status)
+        .json({ error: 'Failed to retrieve streaming variants', details: message });
     }
 
     const detailsJson = await detailsRes.json();
@@ -218,16 +228,38 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       streamsJson?.thumbnails ??
       [];
 
-    const downloads = normaliseFormats(streamsJson?.streamingData as RapidStreamingData);
+    const streamingData: RapidStreamingData = (() => {
+      if (streamsJson?.streamingData) return streamsJson.streamingData;
+      if (streamsJson?.data?.streamingData) return streamsJson.data.streamingData;
+      if (streamsJson?.data?.formats || streamsJson?.data?.adaptiveFormats) {
+        return {
+          formats: streamsJson.data.formats,
+          adaptiveFormats: streamsJson.data.adaptiveFormats,
+        };
+      }
+      if (streamsJson?.formats || streamsJson?.adaptiveFormats) {
+        return {
+          formats: streamsJson.formats,
+          adaptiveFormats: streamsJson.adaptiveFormats,
+        };
+      }
+      return {};
+    })();
+
+    const downloads = normaliseFormats(streamingData);
     if (!downloads.length) {
-      return res.status(502).json({ error: 'No downloadable streams were returned by RapidAPI for this video' });
+      return res
+        .status(502)
+        .json({ error: 'No downloadable streams were returned by RapidAPI for this video' });
     }
 
     const payloadResponse: DownloadResponse = {
       videoId,
       title: detailsJson?.videoDetails?.title ?? detailsJson?.title,
       channelName: detailsJson?.videoDetails?.author ?? detailsJson?.channel?.name,
-      durationText: secondsToDuration(detailsJson?.videoDetails?.lengthSeconds ?? detailsJson?.lengthSeconds),
+      durationText: secondsToDuration(
+        detailsJson?.videoDetails?.lengthSeconds ?? detailsJson?.lengthSeconds,
+      ),
       thumbnails,
       downloads,
     };
