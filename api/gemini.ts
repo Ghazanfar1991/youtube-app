@@ -4,18 +4,23 @@ import { GoogleGenAI, Modality, Type } from '@google/genai';
 
 const apiKey = process.env.GEMINI_API_KEY;
 if (!apiKey) {
-  // Do not throw at import time; return 500 at runtime for clearer error
+  // Don't crash during import; return 500 at runtime instead
   console.warn('GEMINI_API_KEY not set on server');
 }
 
 const ai = new GoogleGenAI({ apiKey: apiKey || '' });
 
-// Helper: base64 "data:*/*;base64,AAAA" → {mimeType, data}
+// Helper: data URL → { mimeType, data }
 function parseBase64(dataUrl?: string | null) {
   if (!dataUrl) return null;
   const match = dataUrl.match(/^data:(.+?);base64,(.+)$/);
   if (!match) return null;
   return { mimeType: match[1], data: match[2] };
+}
+
+// Validate aspect ratio; default to 16:9 (safest for YouTube thumbnails)
+function normalizeAspectRatio(ar?: string): '16:9' | '9:16' {
+  return ar === '9:16' || ar === '16:9' ? ar : '16:9';
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -31,70 +36,109 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const { op, payload } = req.body ?? {};
     if (!op) return res.status(400).json({ error: 'Missing op' });
 
-    // ---------- OP: generateThumbnail ----------
+    // -----------------------------------------------------------------------
+    // OP: generateThumbnail
+    // -----------------------------------------------------------------------
     if (op === 'generateThumbnail') {
       const { prompt, referenceImage, userImage, aspectRatio } = payload ?? {};
-      if (!prompt || !aspectRatio) return res.status(400).json({ error: 'Missing prompt/aspectRatio' });
+      if (!prompt) return res.status(400).json({ error: 'Missing prompt' });
 
-      // Text-to-image branch
+      const ar = normalizeAspectRatio(aspectRatio);
+
+      // --- TEXT-TO-IMAGE (no images provided) ------------------------------
       if (!referenceImage && !userImage) {
+        // Augment prompt with thumbnail best practices (only for TTI path)
+        const ttiPrompt = `
+${prompt}
+
+[Thumbnail mode requirements]
+- Create a YouTube thumbnail in ${ar} aspect ratio (no distortion).
+- Strong focal subject; clear foreground/background separation.
+- High contrast, limited palette (2–3 key colors), avoid clutter.
+- If (and only if) the prompt implies text, use ≤ 4 bold, high-contrast words (no paragraphs).
+- Keep all key elements inside a 90% safe margin to prevent edge clipping.
+`.trim();
+
         const response = await ai.models.generateImages({
           model: 'imagen-4.0-generate-001',
-          prompt,
+          prompt: ttiPrompt,
           config: {
             numberOfImages: 1,
             outputMimeType: 'image/png',
-            aspectRatio,
+            aspectRatio: ar,
           },
         });
 
         if (!response.generatedImages?.length) {
           return res.status(500).json({ error: 'Image generation failed to produce an image.' });
         }
+
         const base64ImageBytes = response.generatedImages[0].image.imageBytes;
         return res.status(200).json({
           imageUrl: `data:image/png;base64,${base64ImageBytes}`,
-          responseText: `Image generated from prompt: "${prompt}"`,
+          responseText: `Image generated from prompt (thumbnail mode): "${prompt}"`,
         });
       }
 
-      // Edit/composition branch with Gemini
+      // --- EDIT/COMPOSITION (one or both images provided) -------------------
       const parts: any[] = [];
+
       if (referenceImage) {
         const p = parseBase64(referenceImage);
         if (!p) return res.status(400).json({ error: 'Could not parse reference image data.' });
         parts.push({ inlineData: { mimeType: p.mimeType, data: p.data } });
       }
+
       if (userImage) {
         const p = parseBase64(userImage);
         if (!p) return res.status(400).json({ error: 'Could not parse user image data.' });
         parts.push({ inlineData: { mimeType: p.mimeType, data: p.data } });
       }
 
-      let detailedPrompt =
-        `You are an expert YouTube thumbnail designer using the 'nano-banana' model. Follow these rules strictly:
-1. Output Aspect Ratio: The final output image MUST have a 16:9 aspect ratio.
-2. Precision Editing: Only change elements mentioned in the user's prompt; keep the rest intact.
-`;
-      if (referenceImage && userImage) {
-        detailedPrompt +=
-          `3. Design and Composition: Use the user image as the main subject. Take color/layout/style cues from the reference thumbnail. Follow the user's text prompt.\n`;
-      } else if (referenceImage) {
-        detailedPrompt +=
-          `3. Editing Context: The user provided a reference thumbnail. The following text prompt instructs how to EDIT that image.\n`;
-      }
-      detailedPrompt += `\nUser's instruction: "${payload.prompt}"`;
+      // Strict, unambiguous instruction block
+      let detailedPrompt = `
+You are an expert YouTube thumbnail designer.
+
+HARD RULES (must follow exactly):
+- OUTPUT SIZE: Return a single PNG in EXACT 16:9 aspect ratio. If inputs are not 16:9, crop or extend canvas, but DO NOT distort subjects.
+- EDIT SCOPE: Only change parts explicitly requested by the user. Do NOT modify any other regions, colors, faces, lighting, or composition unless asked.
+- IMAGE ROLES:
+  • referenceImage = style/layout/color/lighting inspiration ONLY (never copy 1:1 unless user says so).
+  • userImage = main subject to place or edit (keep identity, skin tones, lighting continuity).
+- SAFETY MARGINS: Keep all critical elements (faces, main text) inside a 90% safe area to avoid edge clipping on different devices.
+- TEXT TREATMENT (only if the user explicitly asks for text): Use very short, bold, high-contrast text (≤ 4 words), no paragraphs, avoid busy fonts.
+
+CONDITIONS:
+- If BOTH referenceImage and userImage are provided:
+  • Use the userImage as the primary subject.
+  • Match the color palette, contrast and layout rhythm of the referenceImage without copying exact branding or logos.
+- If ONLY referenceImage is provided:
+  • Treat this as an EDIT of that image per the user’s instructions. Maintain original composition; only change what’s requested.
+- If NO images are provided (not this branch):
+  • Produce a high-CTR YouTube thumbnail in 16:9 using thumbnail best practices.
+
+User instruction (authoritative):
+"${prompt}"
+`.trim();
 
       parts.push({ text: detailedPrompt });
 
       if (parts.length <= 1) {
-        return res.status(400).json({ error: 'Image editing requires an image and a text prompt.' });
+        return res.status(400).json({ error: 'Image editing requires at least one image and a text prompt.' });
       }
 
       const response = await ai.models.generateContent({
         model: 'gemini-2.5-flash-image-preview',
         contents: { parts },
-        config: { responseModalities: [Modality.IMAGE, Modality.TEXT] },
+        config: {
+          responseModalities: [Modality.IMAGE, Modality.TEXT],
+          // Enforce 16:9 and PNG on the edit/composition path
+          imageGenerationConfig: {
+            numberOfImages: 1,
+            aspectRatio: '16:9',
+            outputMimeType: 'image/png',
+          },
+        },
       });
 
       let newImageUrl: string | null = null;
@@ -121,7 +165,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(200).json({ imageUrl: newImageUrl, responseText: newResponseText });
     }
 
-    // ---------- OP: editFaceImage ----------
+    // -----------------------------------------------------------------------
+    // OP: editFaceImage
+    // -----------------------------------------------------------------------
     if (op === 'editFaceImage') {
       const { base64Image, prompt } = payload ?? {};
       const parsed = parseBase64(base64Image);
@@ -129,13 +175,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       const parts = [
         { inlineData: { mimeType: parsed.mimeType, data: parsed.data } },
-        { text: prompt },
+        {
+          text: `
+Edit ONLY what is asked; keep identity, skin tones, and lighting consistent.
+Output MUST be a single PNG in EXACT 16:9. If needed, extend canvas or crop (no subject distortion).
+
+Instruction:
+${prompt}
+          `.trim(),
+        },
       ];
 
       const response = await ai.models.generateContent({
         model: 'gemini-2.5-flash-image-preview',
         contents: { parts },
-        config: { responseModalities: [Modality.IMAGE, Modality.TEXT] },
+        config: {
+          responseModalities: [Modality.IMAGE, Modality.TEXT],
+          imageGenerationConfig: {
+            numberOfImages: 1,
+            aspectRatio: '16:9',
+            outputMimeType: 'image/png',
+          },
+        },
       });
 
       let newImageUrl: string | null = null;
@@ -161,7 +222,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(200).json({ imageUrl: newImageUrl, responseText: newResponseText });
     }
 
-    // ---------- OP: getSummaryFromTranscript ----------
+    // -----------------------------------------------------------------------
+    // OP: getSummaryFromTranscript
+    // -----------------------------------------------------------------------
     if (op === 'getSummaryFromTranscript') {
       const { transcript } = payload ?? {};
       if (!transcript) return res.status(400).json({ error: 'Missing transcript' });
@@ -176,16 +239,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             properties: {
               tldr: { type: Type.STRING },
               points: { type: Type.ARRAY, items: { type: Type.STRING } },
-            }
-          }
-        }
+            },
+          },
+        },
       });
 
       const jsonText = (response as any).text?.trim?.() ?? '';
       try {
         const parsed = JSON.parse(jsonText);
         return res.status(200).json(parsed);
-      } catch (e) {
+      } catch {
         return res.status(200).json({
           tldr: 'The model returned a response, but it could not be parsed as valid JSON.',
           points: [jsonText],
@@ -193,7 +256,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
 
-    // ---------- OP: answerQuestionFromTranscript ----------
+    // -----------------------------------------------------------------------
+    // OP: answerQuestionFromTranscript
+    // -----------------------------------------------------------------------
     if (op === 'answerQuestionFromTranscript') {
       const { transcript, question, history } = payload ?? {};
       if (!transcript || !question) return res.status(400).json({ error: 'Missing transcript/question' });
@@ -218,18 +283,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(200).json({ text: (response as any).text });
     }
 
-    // ---------- OP: generateContentIdeas ----------
+    // -----------------------------------------------------------------------
+    // OP: generateContentIdeas
+    // -----------------------------------------------------------------------
     if (op === 'generateContentIdeas') {
       const { topic } = payload ?? {};
       if (!topic) return res.status(400).json({ error: 'Missing topic' });
 
-      const prompt =
-        `You are an expert YouTube content strategist. Based on the following video topic, generate a list of viral-style titles, an SEO-optimized description, and a list of relevant keywords/hashtags.\n\n` +
+      const strategistPrompt =
+        `You are an expert YouTube content strategist. Based on the following video topic, ` +
+        `generate a list of viral-style titles, an SEO-optimized description, and a list of relevant keywords/hashtags.\n\n` +
         `Video Topic: "${topic}"`;
 
       const response = await ai.models.generateContent({
         model: 'gemini-2.5-flash',
-        contents: prompt,
+        contents: strategistPrompt,
         config: {
           responseMimeType: 'application/json',
           responseSchema: {
@@ -238,19 +306,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               titles: { type: Type.ARRAY, items: { type: Type.STRING } },
               description: { type: Type.STRING },
               keywords: { type: Type.ARRAY, items: { type: Type.STRING } },
-            }
-          }
-        }
+            },
+          },
+        },
       });
 
       const jsonText = (response as any).text?.trim?.() ?? '';
       try {
         return res.status(200).json(JSON.parse(jsonText));
-      } catch (e) {
+      } catch {
         return res.status(422).json({ error: 'Invalid JSON from model', raw: jsonText });
       }
     }
 
+    // Unknown op
     return res.status(400).json({ error: `Unknown op: ${op}` });
   } catch (err: any) {
     console.error(err);
