@@ -49,13 +49,9 @@ const YOUTUBE_ID_REGEX =
 
 const extractVideoId = (input: string): string | null => {
   const trimmed = input.trim();
-  if (!trimmed) {
-    return null;
-  }
+  if (!trimmed) return null;
 
-  if (/^[0-9A-Za-z_-]{11}$/.test(trimmed)) {
-    return trimmed;
-  }
+  if (/^[0-9A-Za-z_-]{11}$/.test(trimmed)) return trimmed;
 
   try {
     const url = new URL(trimmed);
@@ -103,7 +99,11 @@ const normaliseFormats = (streamingData?: RapidStreamingData): DownloadVariant[]
 
   for (const format of combined) {
     const directUrl =
-      format.url ?? format.downloadUrl ?? format.href ?? resolveCipherUrl(format.signatureCipher ?? format.cipher);
+      format.url ??
+      format.downloadUrl ??
+      format.href ??
+      resolveCipherUrl(format.signatureCipher ?? format.cipher);
+
     if (!directUrl) continue;
 
     const contentLengthRaw =
@@ -131,9 +131,7 @@ const normaliseFormats = (streamingData?: RapidStreamingData): DownloadVariant[]
   }
 
   return variants.sort((a, b) => {
-    if (a.hasAudio !== b.hasAudio) {
-      return a.hasAudio ? -1 : 1;
-    }
+    if (a.hasAudio !== b.hasAudio) return a.hasAudio ? -1 : 1;
     return (b.bitrate ?? 0) - (a.bitrate ?? 0);
   });
 };
@@ -158,12 +156,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
+  let payload: unknown;
+  try {
+    if (typeof req.body === 'string') {
+      payload = JSON.parse(req.body);
+    } else if (Buffer.isBuffer(req.body)) {
+      payload = JSON.parse(req.body.toString('utf8'));
+    } else if (req.body && typeof req.body === 'object') {
+      payload = req.body;
+    } else {
+      payload = {};
+    }
+  } catch {
+    return res.status(400).json({ error: 'Malformed JSON body' });
+  }
+
   const rapidApiKey = process.env.RAPIDAPI_KEY;
   if (!rapidApiKey) {
     return res.status(500).json({ error: 'Missing RapidAPI credentials' });
   }
 
-  const url = typeof req.body?.url === 'string' ? req.body.url.trim() : '';
+  const url =
+    typeof (payload as { url?: unknown }).url === 'string'
+      ? (payload as { url: string }).url.trim()
+      : '';
   if (!url) {
     return res.status(400).json({ error: 'Provide a YouTube URL or video ID' });
   }
@@ -207,7 +223,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(502).json({ error: 'No downloadable streams were returned by RapidAPI for this video' });
     }
 
-    const payload: DownloadResponse = {
+    const payloadResponse: DownloadResponse = {
       videoId,
       title: detailsJson?.videoDetails?.title ?? detailsJson?.title,
       channelName: detailsJson?.videoDetails?.author ?? detailsJson?.channel?.name,
@@ -216,7 +232,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       downloads,
     };
 
-    res.status(200).json(payload);
+    res.status(200).json(payloadResponse);
   } catch (error) {
     console.error('[youtube-download] error', error);
     res.status(500).json({ error: 'Unexpected error contacting RapidAPI' });
