@@ -16,7 +16,7 @@
     "express": "^5.1.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
-    "youtube-dl-exec": "^3.0.25",
+    "youtube-dl-exec": "^3.0.25"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
