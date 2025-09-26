@@ -62,9 +62,9 @@ const AccountSettingsPage: React.FC<AccountSettingsPageProps> = ({ onNavigate })
     };
 
     const creditPacks = [
-        { amount: 100, price: 5 },
-        { amount: 500, price: 20 },
-        { amount: 1500, price: 50 },
+        { amount: 60, price: 5 },
+        { amount: 250, price: 20 },
+        { amount: 650, price: 50 },
     ];
     
     return (

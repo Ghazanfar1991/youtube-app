@@ -65,7 +65,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     useEffect(() => {
         if (activeAccount && activeAccount.plan !== 'Free' && activeAccount.planRenewalDate && Date.now() > activeAccount.planRenewalDate) {
             console.log("Renewing plan for user:", activeAccount.email);
-            const creditsForPlan = activeAccount.plan === 'Pro' ? 750 : 1500;
+            const creditsForPlan = activeAccount.plan === 'Pro' ? 200 : 500;
             const nextRenewal = new Date();
             nextRenewal.setMonth(nextRenewal.getMonth() + 1);
             
@@ -196,7 +196,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     const changePlan = (plan: 'Pro' | 'Max') => {
         if (!activeAccount) return;
 
-        const creditsForPlan = plan === 'Pro' ? 750 : 1500;
+        const creditsForPlan = plan === 'Pro' ? 200 : 500;
         const nextRenewal = new Date();
         nextRenewal.setMonth(nextRenewal.getMonth() + 1);
 

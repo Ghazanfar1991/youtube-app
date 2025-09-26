@@ -106,7 +106,7 @@ const PricingPage: React.FC<PricingPageProps> = ({ onNavigate }) => {
             price="$15"
             description="For content creators and professionals who need more power."
             features={[
-                '750 credits per month',
+                '200 credits per month',
                 'Advanced AI models',
                 'Image editing features',
                 'Priority support'
@@ -121,7 +121,7 @@ const PricingPage: React.FC<PricingPageProps> = ({ onNavigate }) => {
             price="$29"
             description="For power users and small teams with high-volume needs."
             features={[
-                '1,500 credits per month',
+                '500 credits per month',
                 'Access to newest features',
                 'Team collaboration tools',
                 'Dedicated account manager'
