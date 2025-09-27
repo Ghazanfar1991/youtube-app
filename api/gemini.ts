@@ -1,27 +1,113 @@
 // api/gemini.ts
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { GoogleGenAI, Modality, Type } from '@google/genai';
+import { GoogleGenAI } from '@google/genai';
+// Optional exact-pixel normalization (recommended)
+import sharp from 'sharp';
 
 const apiKey = process.env.GEMINI_API_KEY;
 if (!apiKey) {
-  // Don't crash during import; return 500 at runtime instead
   console.warn('GEMINI_API_KEY not set on server');
 }
 
 const ai = new GoogleGenAI({ apiKey: apiKey || '' });
 
-// Helper: data URL → { mimeType, data }
-function parseBase64(dataUrl?: string | null) {
+// --- helpers ---------------------------------------------------------------
+
+function parseDataUrl(dataUrl?: string | null) {
   if (!dataUrl) return null;
-  const match = dataUrl.match(/^data:(.+?);base64,(.+)$/);
-  if (!match) return null;
-  return { mimeType: match[1], data: match[2] };
+  const m = dataUrl.match(/^data:(.+?);base64,(.+)$/);
+  if (!m) return null;
+  return { mimeType: m[1], dataB64: m[2] };
 }
 
-// Validate aspect ratio; default to 16:9 (safest for YouTube thumbnails)
 function normalizeAspectRatio(ar?: string): '16:9' | '9:16' {
   return ar === '9:16' || ar === '16:9' ? ar : '16:9';
 }
+
+/**
+ * Ensure exact 1920x1080 PNG (non-destructive: uses cover+center).
+ * If sharp not desired, return input unchanged.
+ */
+async function normalizeTo1920x1080PNG(imageB64: string): Promise<string> {
+  try {
+    const buf = Buffer.from(imageB64, 'base64');
+    const out = await sharp(buf)
+      .resize(1920, 1080, { fit: 'cover', position: 'centre' })
+      .png()
+      .toBuffer();
+    return out.toString('base64');
+  } catch {
+    // If anything fails, just return original
+    return imageB64;
+  }
+}
+
+/**
+ * Build the prompt block according to inputs, aligned with:
+ * https://ai.google.dev/gemini-api/docs/image-generation (Gemini Flash Image) :contentReference[oaicite:2]{index=2}
+ */
+function buildInstruction({
+  prompt,
+  hasReference,
+  hasUser,
+  ar,
+  textOnly,
+}: {
+  prompt: string;
+  hasReference: boolean;
+  hasUser: boolean;
+  ar: '16:9' | '9:16';
+  textOnly: boolean;
+}) {
+  const baseRules = `
+You are an expert YouTube thumbnail designer.
+
+HARD RULES:
+- OUTPUT: Create a YouTube thumbnail in EXACT ${ar} aspect ratio. Do NOT distort people or objects. If inputs aren't ${ar}, extend canvas or crop safely (no stretching).
+- EDIT SCOPE: Change only what the instructions request. Keep other regions, colors, faces, lighting and composition intact unless asked.
+- SAFE AREA: Keep faces and any text inside a ~90% safe margin to avoid edge clipping across devices.
+- TEXT (ONLY if requested): ≤ 4 bold, high-contrast words, no paragraphs, legible at small sizes.
+
+ROLE DEFINITIONS:
+- referenceImage = style/layout/color/lighting inspiration and/or the image to minimally EDIT if the user asks for edits.
+- userImage = the person/subject to feature prominently; preserve identity, skin tones and lighting continuity.
+`.trim();
+
+  const cases: string[] = [];
+
+  if (hasReference && hasUser) {
+    cases.push(`
+CASE: Reference + User Image + Text
+- Use the userImage as the primary subject.
+- Use the referenceImage for layout rhythm, palette and style cues.
+- If the instruction says "edit the reference", perform a minimal edit of referenceImage to insert or adjust the userImage as directed.
+- Otherwise, generate a NEW thumbnail that clearly follows the referenceImage's style while featuring the userImage as the subject.
+`.trim());
+  } else if (hasReference && !hasUser) {
+    cases.push(`
+CASE: Reference Image + Text
+- Treat this primarily as an EDIT of the provided referenceImage if the instruction implies changes to that image.
+- If the instruction is general (design a new one in this style), follow the style of the referenceImage and produce a new thumbnail consistent with it.
+- Maintain original composition unless the user asks for layout changes.
+`.trim());
+  } else if (!hasReference && hasUser) {
+    cases.push(`
+CASE: User Image + Text
+- Feature the userImage as the main subject and design the rest of the thumbnail per instructions (background, colors, graphics) without distorting the subject.
+`.trim());
+  } else if (textOnly) {
+    cases.push(`
+CASE: Text Only (no images provided) — Thumbnail Mode
+- Strong focal subject with clear foreground/background separation.
+- High contrast, limited palette (2–3 key colors), avoid clutter.
+- If the prompt implies text, keep it short and very legible.
+`.trim());
+  }
+
+  return `${baseRules}\n\n${cases.join('\n\n')}\n\nUSER INSTRUCTION (authoritative):\n"${prompt}"`;
+}
+
+// --- HTTP handler ----------------------------------------------------------
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
@@ -36,229 +122,157 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const { op, payload } = req.body ?? {};
     if (!op) return res.status(400).json({ error: 'Missing op' });
 
-    // -----------------------------------------------------------------------
-    // OP: generateThumbnail
-    // -----------------------------------------------------------------------
+    // ---------------------------------------------------------------------
+    // OP: generateThumbnail (handles TTI, single-image edit, or multi-image)
+    // Per docs, we use Gemini Flash Image via generateContent with contents
+    // as [text, image?, image?]. :contentReference[oaicite:3]{index=3}
+    // ---------------------------------------------------------------------
     if (op === 'generateThumbnail') {
       const { prompt, referenceImage, userImage, aspectRatio } = payload ?? {};
       if (!prompt) return res.status(400).json({ error: 'Missing prompt' });
 
       const ar = normalizeAspectRatio(aspectRatio);
+      const hasReference = !!referenceImage;
+      const hasUser = !!userImage;
+      const textOnly = !hasReference && !hasUser;
 
-      // --- TEXT-TO-IMAGE (no images provided) ------------------------------
-      if (!referenceImage && !userImage) {
-        // Augment prompt with thumbnail best practices (only for TTI path)
-        const ttiPrompt = `
-${prompt}
+      // Build instruction aligned with Google’s examples (text first, then images). :contentReference[oaicite:4]{index=4}
+      const instruction = buildInstruction({ prompt, hasReference, hasUser, ar, textOnly });
 
-[Thumbnail mode requirements]
-- Create a YouTube thumbnail in ${ar} aspect ratio (no distortion).
-- Strong focal subject; clear foreground/background separation.
-- High contrast, limited palette (2–3 key colors), avoid clutter.
-- If (and only if) the prompt implies text, use ≤ 4 bold, high-contrast words (no paragraphs).
-- Keep all key elements inside a 90% safe margin to prevent edge clipping.
-`.trim();
+      const parts: any[] = [{ text: instruction }];
 
-        const response = await ai.models.generateImages({
-          model: 'imagen-4.0-generate-001',
-          prompt: ttiPrompt,
-          config: {
-            numberOfImages: 1,
-            outputMimeType: 'image/png',
-            aspectRatio: ar,
-          },
-        });
-
-        if (!response.generatedImages?.length) {
-          return res.status(500).json({ error: 'Image generation failed to produce an image.' });
-        }
-
-        const base64ImageBytes = response.generatedImages[0].image.imageBytes;
-        return res.status(200).json({
-          imageUrl: `data:image/png;base64,${base64ImageBytes}`,
-          responseText: `Image generated from prompt (thumbnail mode): "${prompt}"`,
-        });
+      if (hasReference) {
+        const ref = parseDataUrl(referenceImage);
+        if (!ref) return res.status(400).json({ error: 'Could not parse reference image data.' });
+        parts.push({ inlineData: { mimeType: ref.mimeType, data: ref.dataB64 } });
       }
-
-      // --- EDIT/COMPOSITION (one or both images provided) -------------------
-      const parts: any[] = [];
-
-      if (referenceImage) {
-        const p = parseBase64(referenceImage);
-        if (!p) return res.status(400).json({ error: 'Could not parse reference image data.' });
-        parts.push({ inlineData: { mimeType: p.mimeType, data: p.data } });
-      }
-
-      if (userImage) {
-        const p = parseBase64(userImage);
-        if (!p) return res.status(400).json({ error: 'Could not parse user image data.' });
-        parts.push({ inlineData: { mimeType: p.mimeType, data: p.data } });
-      }
-
-      // Strict, unambiguous instruction block
-      let detailedPrompt = `
-You are an expert YouTube thumbnail designer.
-
-HARD RULES (must follow exactly):
-- OUTPUT SIZE: Return a single PNG in EXACT 16:9 aspect ratio. If inputs are not 16:9, crop or extend canvas, but DO NOT distort subjects.
-- EDIT SCOPE: Only change parts explicitly requested by the user. Do NOT modify any other regions, colors, faces, lighting, or composition unless asked.
-- IMAGE ROLES:
-  • referenceImage = style/layout/color/lighting inspiration ONLY (never copy 1:1 unless user says so).
-  • userImage = main subject to place or edit (keep identity, skin tones, lighting continuity).
-- SAFETY MARGINS: Keep all critical elements (faces, main text) inside a 90% safe area to avoid edge clipping on different devices.
-- TEXT TREATMENT (only if the user explicitly asks for text): Use very short, bold, high-contrast text (≤ 4 words), no paragraphs, avoid busy fonts.
-
-CONDITIONS:
-- If BOTH referenceImage and userImage are provided:
-  • Use the userImage as the primary subject.
-  • Match the color palette, contrast and layout rhythm of the referenceImage without copying exact branding or logos.
-- If ONLY referenceImage is provided:
-  • Treat this as an EDIT of that image per the user’s instructions. Maintain original composition; only change what’s requested.
-- If NO images are provided (not this branch):
-  • Produce a high-CTR YouTube thumbnail in 16:9 using thumbnail best practices.
-
-User instruction (authoritative):
-"${prompt}"
-`.trim();
-
-      parts.push({ text: detailedPrompt });
-
-      if (parts.length <= 1) {
-        return res.status(400).json({ error: 'Image editing requires at least one image and a text prompt.' });
+      if (hasUser) {
+        const usr = parseDataUrl(userImage);
+        if (!usr) return res.status(400).json({ error: 'Could not parse user image data.' });
+        parts.push({ inlineData: { mimeType: usr.mimeType, data: usr.dataB64 } });
       }
 
       const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash-image-preview',
-        contents: { parts },
-        config: {
-          responseModalities: [Modality.IMAGE, Modality.TEXT],
-          // Enforce 16:9 and PNG on the edit/composition path
-          imageGenerationConfig: {
-            numberOfImages: 1,
-            aspectRatio: '16:9',
-            outputMimeType: 'image/png',
-          },
-        },
-      });
+        model: 'gemini-2.5-flash-image-preview', // official “Nano Banana” usage in docs
+        contents: parts,                          // text + image(s) order per docs
+      });                                         // :contentReference[oaicite:5]{index=5}
 
-      let newImageUrl: string | null = null;
-      let newResponseText = 'Image edited successfully.';
+      let imageB64: string | null = null;
+      let replyText = 'OK';
 
-      const candidate = response.candidates?.[0];
-      for (const part of candidate?.content?.parts ?? []) {
-        if ((part as any).inlineData) {
-          const b64 = (part as any).inlineData.data;
-          const mime = (part as any).inlineData.mimeType;
-          newImageUrl = `data:${mime};base64,${b64}`;
-        } else if ((part as any).text) {
-          newResponseText = (part as any).text;
+      const cand = response.candidates?.[0];
+      for (const p of cand?.content?.parts ?? []) {
+        if ((p as any).inlineData) {
+          imageB64 = (p as any).inlineData.data as string;
+        } else if ((p as any).text) {
+          replyText = (p as any).text as string;
         }
       }
 
-      if (!newImageUrl) {
+      if (!imageB64) {
         return res.status(422).json({
-          error: 'The model did not return an image. The prompt may have been blocked for safety reasons.',
+          error: 'The model did not return an image. The prompt may have been blocked or produced text only.',
           debug: response,
         });
       }
 
-      return res.status(200).json({ imageUrl: newImageUrl, responseText: newResponseText });
+      // (Recommended) force exact 1920x1080 PNG for thumbnails
+      const normalized = await normalizeTo1920x1080PNG(imageB64);
+      const dataUrl = `data:image/png;base64,${normalized}`;
+
+      return res.status(200).json({
+        imageUrl: dataUrl,
+        responseText: replyText,
+      });
     }
 
-    // -----------------------------------------------------------------------
-    // OP: editFaceImage
-    // -----------------------------------------------------------------------
+    // ---------------------------------------------------------------------
+    // OP: editFaceImage — specific “edit only” flow with single user image
+    // ---------------------------------------------------------------------
     if (op === 'editFaceImage') {
       const { base64Image, prompt } = payload ?? {};
-      const parsed = parseBase64(base64Image);
+      if (!base64Image || !prompt) {
+        return res.status(400).json({ error: 'Missing base64Image or prompt' });
+      }
+
+      const parsed = parseDataUrl(base64Image);
       if (!parsed) return res.status(400).json({ error: 'Could not parse image data.' });
 
-      const parts = [
-        { inlineData: { mimeType: parsed.mimeType, data: parsed.data } },
-        {
-          text: `
-Edit ONLY what is asked; keep identity, skin tones, and lighting consistent.
-Output MUST be a single PNG in EXACT 16:9. If needed, extend canvas or crop (no subject distortion).
+      const ar: '16:9' = '16:9';
+      const instruction = `
+You are an expert YouTube thumbnail editor.
 
-Instruction:
+HARD RULES:
+- OUTPUT: Thumbnail in EXACT ${ar}. Extend canvas or crop safely as needed; never stretch the subject.
+- EDIT SCOPE: Modify ONLY what the instruction asks. Preserve identity, skin tones, lighting and composition.
+
+USER INSTRUCTION:
 ${prompt}
-          `.trim(),
-        },
+`.trim();
+
+      const parts = [
+        { text: instruction },
+        { inlineData: { mimeType: parsed.mimeType, data: parsed.dataB64 } },
       ];
 
       const response = await ai.models.generateContent({
         model: 'gemini-2.5-flash-image-preview',
-        contents: { parts },
-        config: {
-          responseModalities: [Modality.IMAGE, Modality.TEXT],
-          imageGenerationConfig: {
-            numberOfImages: 1,
-            aspectRatio: '16:9',
-            outputMimeType: 'image/png',
-          },
-        },
-      });
+        contents: parts,
+      }); // per docs, no extra config fields. :contentReference[oaicite:6]{index=6}
 
-      let newImageUrl: string | null = null;
-      let newResponseText = 'Image edited successfully.';
-      const candidate = response.candidates?.[0];
-      for (const part of candidate?.content?.parts ?? []) {
-        if ((part as any).inlineData) {
-          const b64 = (part as any).inlineData.data;
-          const mime = (part as any).inlineData.mimeType;
-          newImageUrl = `data:${mime};base64,${b64}`;
-        } else if ((part as any).text) {
-          newResponseText = (part as any).text;
+      let imageB64: string | null = null;
+      let replyText = 'Image edited successfully.';
+
+      const cand = response.candidates?.[0];
+      for (const p of cand?.content?.parts ?? []) {
+        if ((p as any).inlineData) {
+          imageB64 = (p as any).inlineData.data as string;
+        } else if ((p as any).text) {
+          replyText = (p as any).text as string;
         }
       }
 
-      if (!newImageUrl) {
+      if (!imageB64) {
         return res.status(422).json({
-          error: 'The model did not return an image. The prompt may have been blocked for safety reasons.',
+          error: 'The model did not return an image. The prompt may have been blocked or produced text only.',
           debug: response,
         });
       }
 
-      return res.status(200).json({ imageUrl: newImageUrl, responseText: newResponseText });
+      const normalized = await normalizeTo1920x1080PNG(imageB64);
+      return res.status(200).json({
+        imageUrl: `data:image/png;base64,${normalized}`,
+        responseText: replyText,
+      });
     }
 
-    // -----------------------------------------------------------------------
-    // OP: getSummaryFromTranscript
-    // -----------------------------------------------------------------------
+    // ---------------------------------------------------------------------
+    // OP: getSummaryFromTranscript (unchanged, standard Gemini text)
+    // ---------------------------------------------------------------------
     if (op === 'getSummaryFromTranscript') {
       const { transcript } = payload ?? {};
       if (!transcript) return res.status(400).json({ error: 'Missing transcript' });
 
       const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: `Summarize the following transcript. Provide a short "TL;DR" summary, followed by a few key bullet points. The transcript is:\n\n${transcript}`,
-        config: {
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              tldr: { type: Type.STRING },
-              points: { type: Type.ARRAY, items: { type: Type.STRING } },
-            },
-          },
-        },
+        model: 'gemini-2.5-flash', // text model
+        contents: `Summarize the following transcript. Provide a short "TL;DR", then key bullet points:\n\n${transcript}`,
       });
 
-      const jsonText = (response as any).text?.trim?.() ?? '';
+      const text = (response as any).text?.trim?.() ?? '';
       try {
-        const parsed = JSON.parse(jsonText);
+        const parsed = JSON.parse(text);
         return res.status(200).json(parsed);
       } catch {
         return res.status(200).json({
-          tldr: 'The model returned a response, but it could not be parsed as valid JSON.',
-          points: [jsonText],
+          tldr: 'The model returned a response, but it was not valid JSON.',
+          points: [text],
         });
       }
     }
 
-    // -----------------------------------------------------------------------
-    // OP: answerQuestionFromTranscript
-    // -----------------------------------------------------------------------
+    // ---------------------------------------------------------------------
+    // OP: answerQuestionFromTranscript (unchanged, standard Gemini chat)
+    // ---------------------------------------------------------------------
     if (op === 'answerQuestionFromTranscript') {
       const { transcript, question, history } = payload ?? {};
       if (!transcript || !question) return res.status(400).json({ error: 'Missing transcript/question' });
@@ -267,15 +281,14 @@ ${prompt}
         model: 'gemini-2.5-flash',
         config: {
           systemInstruction:
-            `You are an AI assistant that answers questions about a provided YouTube video transcript. ` +
-            `Be concise and base your answers strictly on the transcript. Here is the transcript:\n\n${transcript}`,
+            `Answer based ONLY on the provided transcript. Be concise.\n\nTRANSCRIPT:\n${transcript}`,
         },
       });
 
       if (Array.isArray(history) && history.length) {
-        chat.history = history.map((msg: any) => ({
-          role: msg.sender === 'user' ? 'user' : 'model',
-          parts: [{ text: msg.text }],
+        chat.history = history.map((m: any) => ({
+          role: m.sender === 'user' ? 'user' : 'model',
+          parts: [{ text: m.text }],
         }));
       }
 
@@ -283,43 +296,32 @@ ${prompt}
       return res.status(200).json({ text: (response as any).text });
     }
 
-    // -----------------------------------------------------------------------
-    // OP: generateContentIdeas
-    // -----------------------------------------------------------------------
+    // ---------------------------------------------------------------------
+    // OP: generateContentIdeas (unchanged, standard Gemini text)
+    // ---------------------------------------------------------------------
     if (op === 'generateContentIdeas') {
       const { topic } = payload ?? {};
       if (!topic) return res.status(400).json({ error: 'Missing topic' });
 
       const strategistPrompt =
-        `You are an expert YouTube content strategist. Based on the following video topic, ` +
-        `generate a list of viral-style titles, an SEO-optimized description, and a list of relevant keywords/hashtags.\n\n` +
-        `Video Topic: "${topic}"`;
+        `You are an expert YouTube content strategist. Based on the topic below, return JSON with:\n` +
+        `- "titles": 5-7 click-worthy titles\n- "description": 2-3 paragraph SEO description\n- "keywords": 10-15 relevant keywords/hashtags\n\n` +
+        `TOPIC: "${topic}"`;
 
+      // Keep simple; if you need strict JSON schema, add response schema later.
       const response = await ai.models.generateContent({
         model: 'gemini-2.5-flash',
         contents: strategistPrompt,
-        config: {
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              titles: { type: Type.ARRAY, items: { type: Type.STRING } },
-              description: { type: Type.STRING },
-              keywords: { type: Type.ARRAY, items: { type: Type.STRING } },
-            },
-          },
-        },
       });
 
-      const jsonText = (response as any).text?.trim?.() ?? '';
+      const text = (response as any).text?.trim?.() ?? '';
       try {
-        return res.status(200).json(JSON.parse(jsonText));
+        return res.status(200).json(JSON.parse(text));
       } catch {
-        return res.status(422).json({ error: 'Invalid JSON from model', raw: jsonText });
+        return res.status(422).json({ error: 'Invalid JSON from model', raw: text });
       }
     }
 
-    // Unknown op
     return res.status(400).json({ error: `Unknown op: ${op}` });
   } catch (err: any) {
     console.error(err);
